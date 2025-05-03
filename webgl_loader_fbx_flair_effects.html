@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>three.js webgl - FBX loader con lluvia y neblina</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+  <link type="text/css" rel="stylesheet" href="main.css">
+</head>
+<body>
+  <div id="info">
+    <a href="https://threejs.org" target="_blank" rel="noopener">three.js</a> - FBXLoader con lluvia y neblina<br />
+    Modelo de <a href="https://www.mixamo.com/" target="_blank" rel="noopener">Mixamo</a>
+  </div>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "../build/three.module.js",
+        "three/addons/": "./jsm/"
+      }
+    }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import Stats from 'three/addons/libs/stats.module.js';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+    import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
+    import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
+    import { Audio, AudioListener, AudioLoader } from 'three';
+
+    let camera, scene, renderer, stats, object, loader, guiMorphsFolder;
+    let mixer, sound;
+    const clock = new THREE.Clock();
+
+    const params = { asset: 'nuevomodelo' };
+    const assets = ['Flair', 'mixamo.fbx', 'nuevomodelo'];
+
+    // Lluvia y neblina
+    let rainParticles = [], rainGeometry, rainMaterial, rainSystem;
+    let rainSpeed = 0.5, windStrength = 0;
+    let fogDensity = 0.015;
+    const rainColor = new THREE.Color(0xffffff);
+
+    init();
+
+    function init() {
+      const container = document.createElement('div');
+      document.body.appendChild(container);
+
+      camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 1, 2000);
+      camera.position.set(100, 200, 300);
+
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x222222);
+
+      const rgbeLoader = new RGBELoader();
+      rgbeLoader.load('models/rgbe/box.hdr', function (texture) {
+        texture.mapping = THREE.EquirectangularReflectionMapping;
+        scene.background = texture;
+        scene.environment = texture;
+      });
+
+      const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 5);
+      hemiLight.position.set(0, 200, 0);
+      scene.add(hemiLight);
+
+      const dirLight = new THREE.DirectionalLight(0xffffff, 5);
+      dirLight.position.set(0, 200, 100);
+      dirLight.castShadow = true;
+      scene.add(dirLight);
+
+      const floorGeometry = new THREE.PlaneGeometry(2000, 2000);
+      const floorTexture = new THREE.TextureLoader().load('models/rgbe/box.hdr');
+      floorTexture.wrapS = floorTexture.wrapT = THREE.RepeatWrapping;
+      floorTexture.repeat.set(20, 20);
+
+      const floorMaterial = new THREE.MeshStandardMaterial({
+        map: floorTexture,
+        metalness: 0.3,
+        roughness: 0.7
+      });
+
+      const floorMesh = new THREE.Mesh(floorGeometry, floorMaterial);
+      floorMesh.rotation.x = -Math.PI / 2;
+      floorMesh.receiveShadow = true;
+      scene.add(floorMesh);
+
+      // Lluvia de partículas
+      const rainCount = 10000;
+      rainGeometry = new THREE.BufferGeometry();
+      const rainPositions = [];
+      for (let i = 0; i < rainCount; i++) {
+        const x = Math.random() * 1000 - 500;
+        const y = Math.random() * 1000;
+        const z = Math.random() * 1000 - 500;
+        rainPositions.push(x, y, z);
+      }
+      rainGeometry.setAttribute('position', new THREE.Float32BufferAttribute(rainPositions, 3));
+      rainMaterial = new THREE.PointsMaterial({ color: rainColor, size: 0.5 });
+      rainSystem = new THREE.Points(rainGeometry, rainMaterial);
+      scene.add(rainSystem);
+
+      // Neblina inicial
+      scene.fog = new THREE.FogExp2(0xffffff, fogDensity);
+
+      loader = new FBXLoader();
+      loadAsset(params.asset);
+
+      renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setAnimationLoop(animate);
+      renderer.shadowMap.enabled = true;
+      container.appendChild(renderer.domElement);
+
+      const controls = new OrbitControls(camera, renderer.domElement);
+      controls.target.set(0, 100, 0);
+      controls.update();
+
+      window.addEventListener('resize', onWindowResize);
+
+      stats = new Stats();
+      container.appendChild(stats.dom);
+
+      const gui = new GUI();
+      gui.add(params, 'asset', assets).onChange(function (value) {
+        loadAsset(value);
+      });
+
+      guiMorphsFolder = gui.addFolder('Morphs').hide();
+
+      // AUDIO 
+      const listener = new AudioListener();
+      camera.add(listener);
+      sound = new Audio(listener);
+      const audioLoader = new AudioLoader();
+      audioLoader.load('models/rgbe/Audio2.mp3', function (buffer) {
+        sound.setBuffer(buffer);
+        sound.setLoop(true);
+        sound.setVolume(0.5);
+        sound.play();
+      });
+
+      // Teclado
+      window.addEventListener('keydown', function (event) {
+        switch (event.key.toLowerCase()) {
+          case 'arrowup': rainSpeed += 0.1; break;
+          case 'arrowdown': rainSpeed = Math.max(0, rainSpeed - 0.1); break;
+          case 'r': rainColor.set(0xff0000); break;
+          case 'g': rainColor.set(0x00ff00); break;
+          case 'b': rainColor.set(0x0000ff); break;
+          case 'w': rainColor.set(0xffffff); break;
+          case 'v': windStrength += 0.2; break;
+          case 'arrowleft': fogDensity = Math.max(0, fogDensity - 0.005); scene.fog.density = fogDensity; break;
+          case 'arrowright': fogDensity += 0.005; scene.fog.density = fogDensity; break;
+          case 'a': scene.fog.color.set(0xff0000); break;
+          case 's': scene.fog.color.set(0x00ff00); break;
+          case 'd': scene.fog.color.set(0x0000ff); break;
+          case 'f': scene.fog.color.set(0xffffff); break;
+        }
+        rainMaterial.color.set(rainColor);
+      });
+    }
+
+    function loadAsset(asset) {
+      loader.load('models/fbx/' + asset + '.fbx', function (group) {
+        if (object) {
+          object.traverse(child => {
+            if (child.material) {
+              const materials = Array.isArray(child.material) ? child.material : [child.material];
+              materials.forEach(mat => {
+                if (mat.map) mat.map.dispose();
+                mat.dispose();
+              });
+            }
+            if (child.geometry) child.geometry.dispose();
+          });
+          scene.remove(object);
+        }
+
+        object = group;
+
+        if (object.animations && object.animations.length) {
+          mixer = new THREE.AnimationMixer(object);
+          const action = mixer.clipAction(object.animations[0]);
+          action.play();
+          if (sound && !sound.isPlaying) sound.play();
+        } else {
+          mixer = null;
+        }
+
+        guiMorphsFolder.children.forEach(child => child.destroy());
+        guiMorphsFolder.hide();
+
+        object.traverse(child => {
+          if (child.isMesh) {
+            child.material = new THREE.MeshStandardMaterial({
+              color: 0xff3300,
+              transparent: true,
+              opacity: 0.9,
+              roughness: 0.5,
+              metalness: 0.7
+            });
+
+            child.castShadow = true;
+            child.receiveShadow = true;
+
+            if (child.morphTargetDictionary) {
+              guiMorphsFolder.show();
+              const meshFolder = guiMorphsFolder.addFolder(child.name || child.uuid);
+              Object.keys(child.morphTargetDictionary).forEach(key => {
+                meshFolder.add(child.morphTargetInfluences, child.morphTargetDictionary[key], 0, 1, 0.01);
+              });
+            }
+          }
+        });
+
+        scene.add(object);
+      });
+    }
+
+    function onWindowResize() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    function animate() {
+      const delta = clock.getDelta();
+      if (mixer) mixer.update(delta);
+
+      // Animar lluvia
+      const positions = rainGeometry.attributes.position.array;
+      for (let i = 0; i < positions.length; i += 3) {
+        positions[i + 1] -= rainSpeed;
+        positions[i] += windStrength * 0.1;
+        if (positions[i + 1] < 0) {
+          positions[i + 1] = 1000;
+          positions[i] = Math.random() * 1000 - 500;
+          positions[i + 2] = Math.random() * 1000 - 500;
+        }
+      }
+      rainGeometry.attributes.position.needsUpdate = true;
+
+      renderer.render(scene, camera);
+      stats.update();
+    }
+  </script>
+</body>
+</html>
